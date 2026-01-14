@@ -1,9 +1,9 @@
-import { useCallback } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { PreviewControls } from '../views/PreviewControls';
 import { usePreviewDevServer } from '../hooks/usePreviewDevServer';
-import { usePreviewUrl } from '../hooks/usePreviewUrl';
 import { useLogStream } from '@/hooks/useLogStream';
 import { useLayoutStore } from '@/stores/useLayoutStore';
+import { useWorkspaceContext } from '@/contexts/WorkspaceContext';
 
 interface PreviewControlsContainerProps {
   attemptId?: string;
@@ -16,69 +16,61 @@ export function PreviewControlsContainer({
   onViewProcessInPanel,
   className,
 }: PreviewControlsContainerProps) {
+  const { repos } = useWorkspaceContext();
   const setLogsMode = useLayoutStore((s) => s.setLogsMode);
-  const triggerPreviewRefresh = useLayoutStore((s) => s.triggerPreviewRefresh);
 
-  const {
-    start,
-    stop,
-    isStarting,
-    isStopping,
-    runningDevServer,
-    latestDevServerProcess,
-  } = usePreviewDevServer(attemptId);
+  const { isStarting, runningDevServers, devServerProcesses } =
+    usePreviewDevServer(attemptId);
 
-  const { logs } = useLogStream(latestDevServerProcess?.id ?? '');
-  const urlInfo = usePreviewUrl(logs);
+  const [activeProcessId, setActiveProcessId] = useState<string | null>(null);
 
-  const handleViewFullLogs = useCallback(() => {
-    if (latestDevServerProcess?.id && onViewProcessInPanel) {
-      // Switch to logs mode and select the dev server process
-      onViewProcessInPanel(latestDevServerProcess.id);
-    } else {
-      // Just switch to logs mode if no process to select
-      setLogsMode(true);
+  useEffect(() => {
+    if (devServerProcesses.length > 0 && !activeProcessId) {
+      setActiveProcessId(devServerProcesses[0].id);
     }
-  }, [latestDevServerProcess?.id, onViewProcessInPanel, setLogsMode]);
+  }, [devServerProcesses, activeProcessId]);
 
-  const handleStart = useCallback(() => {
-    start();
-  }, [start]);
+  const activeProcess =
+    devServerProcesses.find((p) => p.id === activeProcessId) ??
+    devServerProcesses[0];
 
-  const handleStop = useCallback(() => {
-    stop();
-  }, [stop]);
+  const { logs, error: logsError } = useLogStream(activeProcess?.id ?? '');
 
-  const handleRefresh = useCallback(() => {
-    triggerPreviewRefresh();
-  }, [triggerPreviewRefresh]);
+  const handleViewFullLogs = useCallback(
+    (processId?: string) => {
+      const targetId = processId ?? activeProcess?.id;
+      if (targetId && onViewProcessInPanel) {
+        onViewProcessInPanel(targetId);
+      } else {
+        setLogsMode(true);
+      }
+    },
+    [activeProcess?.id, onViewProcessInPanel, setLogsMode]
+  );
 
-  const handleCopyUrl = useCallback(async () => {
-    if (urlInfo?.url) {
-      await navigator.clipboard.writeText(urlInfo.url);
-    }
-  }, [urlInfo?.url]);
+  const handleTabChange = useCallback((processId: string) => {
+    setActiveProcessId(processId);
+  }, []);
 
-  const handleOpenInNewTab = useCallback(() => {
-    if (urlInfo?.url) {
-      window.open(urlInfo.url, '_blank');
-    }
-  }, [urlInfo?.url]);
+  const hasDevScript = repos.some(
+    (repo) => repo.dev_server_script && repo.dev_server_script.trim() !== ''
+  );
+
+  // Don't render if no repos have dev server scripts configured
+  if (!hasDevScript) {
+    return null;
+  }
 
   return (
     <PreviewControls
+      devServerProcesses={devServerProcesses}
+      activeProcessId={activeProcess?.id ?? null}
       logs={logs}
-      url={urlInfo?.url}
+      logsError={logsError}
       onViewFullLogs={handleViewFullLogs}
-      onStart={handleStart}
-      onStop={handleStop}
-      onRefresh={handleRefresh}
-      onCopyUrl={handleCopyUrl}
-      onOpenInNewTab={handleOpenInNewTab}
+      onTabChange={handleTabChange}
       isStarting={isStarting}
-      isStopping={isStopping}
-      hasDevScript={true}
-      isServerRunning={Boolean(runningDevServer)}
+      isServerRunning={runningDevServers.length > 0}
       className={className}
     />
   );

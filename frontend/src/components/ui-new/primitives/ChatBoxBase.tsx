@@ -32,6 +32,7 @@ interface ChatBoxBaseProps {
   placeholder: string;
   onCmdEnter: () => void;
   disabled?: boolean;
+  workspaceId?: string;
   projectId?: string;
   autoFocus?: boolean;
 
@@ -81,6 +82,7 @@ export function ChatBoxBase({
   placeholder,
   onCmdEnter,
   disabled,
+  workspaceId,
   projectId,
   autoFocus,
   variant,
@@ -141,7 +143,8 @@ export function ChatBoxBase({
           onChange={editor.onChange}
           onCmdEnter={onCmdEnter}
           disabled={disabled}
-          className="min-h-0 max-h-[min(15rem,20vh)] overflow-y-auto"
+          className="min-h-0 max-h-[50vh] overflow-y-auto"
+          workspaceId={workspaceId}
           projectId={projectId}
           autoFocus={autoFocus}
           onPasteFiles={onPasteFiles}

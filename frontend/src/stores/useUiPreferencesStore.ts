@@ -30,11 +30,10 @@ export const PERSIST_KEYS = {
   devServerSection: 'dev-server-section',
   // Context bar
   contextBarPosition: 'context-bar-position',
-  // Pane sizes
-  sidebarWidth: 'workspaces-sidebar-width',
-  gitPanelWidth: 'workspaces-git-panel-width',
-  changesPanelWidth: 'workspaces-changes-panel-width',
-  fileTreeHeight: 'workspaces-file-tree-height',
+  // GitHub comments toggle
+  showGitHubComments: 'show-github-comments',
+  // Panel sizes
+  rightMainPanel: 'right-main-panel',
   // Dynamic keys (use helper functions)
   repoCard: (repoId: string) => `repo-card-${repoId}` as const,
 } as const;
@@ -50,10 +49,8 @@ export type PersistKey =
   | typeof PERSIST_KEYS.processesSection
   | typeof PERSIST_KEYS.changesSection
   | typeof PERSIST_KEYS.devServerSection
-  | typeof PERSIST_KEYS.sidebarWidth
-  | typeof PERSIST_KEYS.gitPanelWidth
-  | typeof PERSIST_KEYS.changesPanelWidth
-  | typeof PERSIST_KEYS.fileTreeHeight
+  | typeof PERSIST_KEYS.showGitHubComments
+  | typeof PERSIST_KEYS.rightMainPanel
   | `repo-card-${string}`
   | `diff:${string}`
   | `edit:${string}`

@@ -1,6 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Allotment, LayoutPriority, type AllotmentHandle } from 'allotment';
-import 'allotment/dist/style.css';
+import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
 import { useWorkspaceContext } from '@/contexts/WorkspaceContext';
 import { useActions } from '@/contexts/ActionsContext';
 import { ExecutionProcessesProvider } from '@/contexts/ExecutionProcessesContext';
@@ -27,23 +26,32 @@ import { NavbarContainer } from '@/components/ui-new/containers/NavbarContainer'
 import { PreviewBrowserContainer } from '@/components/ui-new/containers/PreviewBrowserContainer';
 import { PreviewControlsContainer } from '@/components/ui-new/containers/PreviewControlsContainer';
 import { useRenameBranch } from '@/hooks/useRenameBranch';
+import { usePush } from '@/hooks/usePush';
 import { repoApi } from '@/lib/api';
+import { ConfirmDialog } from '@/components/ui-new/dialogs/ConfirmDialog';
+import { ForcePushDialog } from '@/components/dialogs/git/ForcePushDialog';
+import { WorkspacesGuideDialog } from '@/components/ui-new/dialogs/WorkspacesGuideDialog';
+import { useUserSystem } from '@/components/ConfigProvider';
 import { useDiffStream } from '@/hooks/useDiffStream';
 import { useTask } from '@/hooks/useTask';
 import { useAttemptRepo } from '@/hooks/useAttemptRepo';
 import { useBranchStatus } from '@/hooks/useBranchStatus';
 import {
-  usePaneSize,
-  useExpandedAll,
   PERSIST_KEYS,
+  useExpandedAll,
+  usePaneSize,
 } from '@/stores/useUiPreferencesStore';
-import { useLayoutStore } from '@/stores/useLayoutStore';
+import {
+  useLayoutStore,
+  useIsRightMainPanelVisible,
+} from '@/stores/useLayoutStore';
 import { useDiffViewStore } from '@/stores/useDiffViewStore';
 import { CommandBarDialog } from '@/components/ui-new/dialogs/CommandBarDialog';
 import { useCommandBarShortcut } from '@/hooks/useCommandBarShortcut';
 import { Actions } from '@/components/ui-new/actions';
 import type { RepoAction } from '@/components/ui-new/primitives/RepoCard';
 import type { Workspace, RepoWithTargetBranch, Merge } from 'shared/types';
+import { useNavigate } from 'react-router-dom';
 
 // Container component for GitPanel that uses hooks requiring GitOperationsProvider
 interface GitPanelContainerProps {
@@ -53,6 +61,8 @@ interface GitPanelContainerProps {
   onBranchNameChange: (name: string) => void;
 }
 
+type PushState = 'idle' | 'pending' | 'success' | 'error';
+
 function GitPanelContainer({
   selectedWorkspace,
   repos,
@@ -60,6 +70,102 @@ function GitPanelContainer({
   onBranchNameChange,
 }: GitPanelContainerProps) {
   const { executeAction } = useActions();
+  const navigate = useNavigate();
+
+  // Track push state per repo: idle, pending, success, or error
+  const [pushStates, setPushStates] = useState<Record<string, PushState>>({});
+  const pushStatesRef = useRef<Record<string, PushState>>({});
+  pushStatesRef.current = pushStates;
+  const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentPushRepoRef = useRef<string | null>(null);
+
+  // Reset push-related state when the selected workspace changes to avoid
+  // leaking push state across workspaces with repos that share the same ID.
+  useEffect(() => {
+    setPushStates({});
+    pushStatesRef.current = {};
+    currentPushRepoRef.current = null;
+
+    if (successTimeoutRef.current) {
+      clearTimeout(successTimeoutRef.current);
+      successTimeoutRef.current = null;
+    }
+  }, [selectedWorkspace?.id]);
+  // Use push hook for direct API access with proper error handling
+  const pushMutation = usePush(
+    selectedWorkspace?.id,
+    // onSuccess
+    () => {
+      const repoId = currentPushRepoRef.current;
+      if (!repoId) return;
+      setPushStates((prev) => ({ ...prev, [repoId]: 'success' }));
+      // Clear success state after 2 seconds
+      successTimeoutRef.current = setTimeout(() => {
+        setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+      }, 2000);
+    },
+    // onError
+    async (err, errorData) => {
+      const repoId = currentPushRepoRef.current;
+      if (!repoId) return;
+
+      // Handle force push required - show confirmation dialog
+      if (errorData?.type === 'force_push_required' && selectedWorkspace?.id) {
+        setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+        await ForcePushDialog.show({
+          attemptId: selectedWorkspace.id,
+          repoId,
+        });
+        return;
+      }
+
+      // Show error state and dialog for other errors
+      setPushStates((prev) => ({ ...prev, [repoId]: 'error' }));
+      const message =
+        err instanceof Error ? err.message : 'Failed to push changes';
+      ConfirmDialog.show({
+        title: 'Error',
+        message,
+        confirmText: 'OK',
+        showCancelButton: false,
+        variant: 'destructive',
+      });
+      // Clear error state after 3 seconds
+      successTimeoutRef.current = setTimeout(() => {
+        setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+      }, 3000);
+    }
+  );
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Compute repoInfos with push button state
+  const repoInfosWithPushButton = useMemo(
+    () =>
+      repoInfos.map((repo) => {
+        const state = pushStates[repo.id] ?? 'idle';
+        const hasUnpushedCommits =
+          repo.prStatus === 'open' && (repo.remoteCommitsAhead ?? 0) > 0;
+        // Show push button if there are unpushed commits OR if we're in a push flow
+        // (pending/success/error states keep the button visible for feedback)
+        const isInPushFlow = state !== 'idle';
+        return {
+          ...repo,
+          showPushButton: hasUnpushedCommits && !isInPushFlow,
+          isPushPending: state === 'pending',
+          isPushSuccess: state === 'success',
+          isPushError: state === 'error',
+        };
+      }),
+    [repoInfos, pushStates]
+  );
 
   // Handle copying repo path to clipboard
   const handleCopyPath = useCallback(
@@ -100,27 +206,56 @@ function GitPanelContainer({
         merge: Actions.GitMerge,
         rebase: Actions.GitRebase,
         'change-target': Actions.GitChangeTarget,
+        push: Actions.GitPush,
       };
 
       const actionDef = actionMap[action];
       if (!actionDef) return;
 
-      // Execute action with pre-selected repoId
-      await executeAction(actionDef, selectedWorkspace.id, {
-        gitRepoId: repoId,
-      });
+      // Execute git action with workspaceId and repoId
+      await executeAction(actionDef, selectedWorkspace.id, repoId);
     },
     [selectedWorkspace, executeAction]
   );
 
+  // Handle push button click - use mutation for proper state tracking
+  const handlePushClick = useCallback(
+    (repoId: string) => {
+      // Use ref to check current state to avoid stale closure
+      if (pushStatesRef.current[repoId] === 'pending') return;
+
+      // Clear any existing timeout
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+        successTimeoutRef.current = null;
+      }
+
+      // Track which repo we're pushing
+      currentPushRepoRef.current = repoId;
+      setPushStates((prev) => ({ ...prev, [repoId]: 'pending' }));
+      pushMutation.mutate({ repo_id: repoId });
+    },
+    [pushMutation]
+  );
+
+  // Handle opening repository settings
+  const handleOpenSettings = useCallback(
+    (repoId: string) => {
+      navigate(`/settings/repos?repoId=${repoId}`);
+    },
+    [navigate]
+  );
+
   return (
     <GitPanel
-      repos={repoInfos}
+      repos={repoInfosWithPushButton}
       workingBranchName={selectedWorkspace?.branch ?? ''}
       onWorkingBranchNameChange={onBranchNameChange}
       onActionsClick={handleActionsClick}
+      onPushClick={handlePushClick}
       onOpenInEditor={handleOpenInEditor}
       onCopyPath={handleCopyPath}
+      onOpenSettings={handleOpenSettings}
       onAddRepo={() => console.log('Add repo clicked')}
     />
   );
@@ -160,7 +295,61 @@ export function WorkspacesLayout() {
     setChangesMode,
     setLogsMode,
     resetForCreateMode,
+    setSidebarVisible,
+    setMainPanelVisible,
   } = useLayoutStore();
+
+  const [rightMainPanelSize, setRightMainPanelSize] = usePaneSize(
+    PERSIST_KEYS.rightMainPanel,
+    50
+  );
+  const isRightMainPanelVisible = useIsRightMainPanelVisible();
+
+  const defaultLayout = (): Layout => {
+    let layout = { 'left-main': 50, 'right-main': 50 };
+    if (typeof rightMainPanelSize === 'number') {
+      layout = {
+        'left-main': 100 - rightMainPanelSize,
+        'right-main': rightMainPanelSize,
+      };
+    }
+    return layout;
+  };
+
+  const onLayoutChange = (layout: Layout) => {
+    if (isRightMainPanelVisible) {
+      setRightMainPanelSize(layout['right-main']);
+    }
+  };
+
+  // === Auto-show Workspaces Guide on first visit ===
+  const WORKSPACES_GUIDE_ID = 'workspaces-guide';
+  const {
+    config,
+    updateAndSaveConfig,
+    loading: configLoading,
+  } = useUserSystem();
+
+  const seenFeatures = useMemo(
+    () => config?.showcases?.seen_features ?? [],
+    [config?.showcases?.seen_features]
+  );
+
+  const hasSeenGuide =
+    !configLoading && seenFeatures.includes(WORKSPACES_GUIDE_ID);
+
+  useEffect(() => {
+    if (configLoading || hasSeenGuide) return;
+
+    // Mark as seen immediately before showing, so page reload doesn't re-trigger
+    void updateAndSaveConfig({
+      showcases: { seen_features: [...seenFeatures, WORKSPACES_GUIDE_ID] },
+    });
+
+    WorkspacesGuideDialog.show().finally(() => {
+      WorkspacesGuideDialog.hide();
+    });
+  }, [configLoading, hasSeenGuide, seenFeatures, updateAndSaveConfig]);
 
   // Read persisted draft for sidebar placeholder (works outside of CreateModeProvider)
   const { scratch: draftScratch } = useScratch(
@@ -214,7 +403,7 @@ export function WorkspacesLayout() {
     [renameBranch]
   );
 
-  // Compute diff stats from real diffs
+  // Compute aggregate diff stats from real diffs (for WorkspacesMainContainer)
   const diffStats = useMemo(
     () => ({
       filesChanged: realDiffs.length,
@@ -252,20 +441,33 @@ export function WorkspacesLayout() {
           }
         }
 
+        // Compute per-repo diff stats
+        const repoDiffs = realDiffs.filter((d) => d.repoId === repo.id);
+        const filesChanged = repoDiffs.length;
+        const linesAdded = repoDiffs.reduce(
+          (sum, d) => sum + (d.additions ?? 0),
+          0
+        );
+        const linesRemoved = repoDiffs.reduce(
+          (sum, d) => sum + (d.deletions ?? 0),
+          0
+        );
+
         return {
           id: repo.id,
           name: repo.display_name || repo.name,
           targetBranch: repo.target_branch || 'main',
           commitsAhead: repoStatus?.commits_ahead ?? 0,
-          filesChanged: diffStats.filesChanged,
-          linesAdded: diffStats.linesAdded,
-          linesRemoved: diffStats.linesRemoved,
+          remoteCommitsAhead: repoStatus?.remote_commits_ahead ?? 0,
+          filesChanged,
+          linesAdded,
+          linesRemoved,
           prNumber,
           prUrl,
           prStatus,
         };
       }),
-    [repos, diffStats, branchStatus]
+    [repos, realDiffs, branchStatus]
   );
 
   // Content for logs panel (either process logs or tool content)
@@ -310,26 +512,27 @@ export function WorkspacesLayout() {
     );
   }, [logMatchIndices.length]);
 
-  // Ref to Allotment for programmatic control
-  const allotmentRef = useRef<AllotmentHandle>(null);
-
-  // Reset Allotment sizes when changes, logs, or preview panel becomes visible
-  // This re-applies preferredSize percentages based on current window size
-  useEffect(() => {
-    if (
-      (isChangesMode || isLogsMode || isPreviewMode) &&
-      allotmentRef.current
-    ) {
-      allotmentRef.current.reset();
-    }
-  }, [isChangesMode, isLogsMode, isPreviewMode]);
-
   // Reset changes and logs mode when entering create mode
   useEffect(() => {
     if (isCreateMode) {
       resetForCreateMode();
     }
   }, [isCreateMode, resetForCreateMode]);
+
+  // Show sidebar when right main panel is hidden
+  useEffect(() => {
+    if (!isRightMainPanelVisible) {
+      setSidebarVisible(true);
+    }
+  }, [isRightMainPanelVisible, setSidebarVisible]);
+
+  // Ensure left main panel (chat) is visible when right main panel is hidden
+  // This prevents invalid state where only sidebars are visible after page reload
+  useEffect(() => {
+    if (!isMainPanelVisible && !isRightMainPanelVisible) {
+      setMainPanelVisible(true);
+    }
+  }, [isMainPanelVisible, isRightMainPanelVisible, setMainPanelVisible]);
 
   // Command bar keyboard shortcut (CMD+K)
   const handleOpenCommandBar = useCallback(() => {
@@ -339,52 +542,6 @@ export function WorkspacesLayout() {
 
   // Expanded state for file tree selection
   const { setExpanded } = useExpandedAll();
-
-  // Persisted pane sizes
-  const [sidebarWidth, setSidebarWidth] = usePaneSize(
-    PERSIST_KEYS.sidebarWidth,
-    300
-  );
-  const [gitPanelWidth, setGitPanelWidth] = usePaneSize(
-    PERSIST_KEYS.gitPanelWidth,
-    300
-  );
-  const [changesPanelWidth, setChangesPanelWidth] = usePaneSize(
-    PERSIST_KEYS.changesPanelWidth,
-    '40%'
-  );
-  const [fileTreeHeight, setFileTreeHeight] = usePaneSize(
-    PERSIST_KEYS.fileTreeHeight,
-    '70%'
-  );
-
-  // Handle file tree resize (vertical split within git panel)
-  const handleFileTreeResize = useCallback(
-    (sizes: number[]) => {
-      if (sizes[0] !== undefined) setFileTreeHeight(sizes[0]);
-    },
-    [setFileTreeHeight]
-  );
-
-  // Handle pane resize end
-  const handlePaneResize = useCallback(
-    (sizes: number[]) => {
-      // sizes[0] = sidebar, sizes[1] = main, sizes[2] = changes/logs panel, sizes[3] = git panel
-      if (sizes[0] !== undefined) setSidebarWidth(sizes[0]);
-      if (sizes[3] !== undefined) setGitPanelWidth(sizes[3]);
-
-      const total = sizes.reduce((sum, s) => sum + (s ?? 0), 0);
-      if (total > 0) {
-        // Store changes/logs panel as percentage of TOTAL container width
-        const centerPaneWidth = sizes[2];
-        if (centerPaneWidth !== undefined) {
-          const percent = Math.round((centerPaneWidth / total) * 100);
-          setChangesPanelWidth(`${percent}%`);
-        }
-      }
-    },
-    [setSidebarWidth, setGitPanelWidth, setChangesPanelWidth]
-  );
 
   // Navigate to logs panel and select a specific process
   const handleViewProcessInPanel = useCallback(
@@ -460,8 +617,8 @@ export function WorkspacesLayout() {
     if (isChangesMode) {
       // In changes mode, split git panel vertically: file tree on top, git on bottom
       return (
-        <Allotment vertical onDragEnd={handleFileTreeResize} proportionalLayout>
-          <Allotment.Pane minSize={200} preferredSize={fileTreeHeight}>
+        <div className="flex flex-col h-full">
+          <div className="flex-[7] min-h-0 overflow-hidden">
             <FileTreeContainer
               key={selectedWorkspace?.id}
               workspaceId={selectedWorkspace?.id}
@@ -474,16 +631,16 @@ export function WorkspacesLayout() {
                 setExpanded(`diff:${path}`, true);
               }}
             />
-          </Allotment.Pane>
-          <Allotment.Pane minSize={200}>
+          </div>
+          <div className="flex-[3] min-h-0 overflow-hidden">
             <GitPanelContainer
               selectedWorkspace={selectedWorkspace}
               repos={repos}
               repoInfos={repoInfos}
               onBranchNameChange={handleBranchNameChange}
             />
-          </Allotment.Pane>
-        </Allotment>
+          </div>
+        </div>
       );
     }
 
@@ -495,8 +652,8 @@ export function WorkspacesLayout() {
           ? logsPanelContent.processId
           : null;
       return (
-        <Allotment vertical onDragEnd={handleFileTreeResize} proportionalLayout>
-          <Allotment.Pane minSize={200} preferredSize={fileTreeHeight}>
+        <div className="flex flex-col h-full">
+          <div className="flex-[7] min-h-0 overflow-hidden">
             <ProcessListContainer
               selectedProcessId={selectedProcessId}
               onSelectProcess={handleViewProcessInPanel}
@@ -508,38 +665,38 @@ export function WorkspacesLayout() {
               onPrevMatch={handleLogPrevMatch}
               onNextMatch={handleLogNextMatch}
             />
-          </Allotment.Pane>
-          <Allotment.Pane minSize={200}>
+          </div>
+          <div className="flex-[3] min-h-0 overflow-hidden">
             <GitPanelContainer
               selectedWorkspace={selectedWorkspace}
               repos={repos}
               repoInfos={repoInfos}
               onBranchNameChange={handleBranchNameChange}
             />
-          </Allotment.Pane>
-        </Allotment>
+          </div>
+        </div>
       );
     }
 
     if (isPreviewMode) {
       // In preview mode, split git panel vertically: preview controls on top, git on bottom
       return (
-        <Allotment vertical onDragEnd={handleFileTreeResize} proportionalLayout>
-          <Allotment.Pane minSize={200} preferredSize={fileTreeHeight}>
+        <div className="flex flex-col h-full">
+          <div className="flex-[7] min-h-0 overflow-hidden">
             <PreviewControlsContainer
               attemptId={selectedWorkspace?.id}
               onViewProcessInPanel={handleViewProcessInPanel}
             />
-          </Allotment.Pane>
-          <Allotment.Pane minSize={200}>
+          </div>
+          <div className="flex-[3] min-h-0 overflow-hidden">
             <GitPanelContainer
               selectedWorkspace={selectedWorkspace}
               repos={repos}
               repoInfos={repoInfos}
               onBranchNameChange={handleBranchNameChange}
             />
-          </Allotment.Pane>
-        </Allotment>
+          </div>
+        </div>
       );
     }
 
@@ -571,120 +728,143 @@ export function WorkspacesLayout() {
 
   // Render layout content (create mode or workspace mode)
   const renderContent = () => {
-    const allotmentContent = (
-      <Allotment
-        ref={allotmentRef}
-        className="flex-1 min-h-0"
-        onDragEnd={handlePaneResize}
+    // Main panel content
+    const mainPanelContent = isCreateMode ? (
+      <CreateChatBoxContainer />
+    ) : (
+      <FileNavigationProvider
+        viewFileInChanges={handleViewFileInChanges}
+        diffPaths={diffPaths}
       >
-        <Allotment.Pane
-          minSize={300}
-          preferredSize={sidebarWidth}
-          maxSize={600}
-          visible={isSidebarVisible}
+        <LogNavigationProvider
+          viewProcessInPanel={handleViewProcessInPanel}
+          viewToolContentInPanel={handleViewToolContentInPanel}
         >
-          <div className="h-full overflow-hidden">{renderSidebar()}</div>
-        </Allotment.Pane>
-
-        <Allotment.Pane
-          visible={isMainPanelVisible}
-          priority={LayoutPriority.High}
-          minSize={300}
-        >
-          <div className="h-full overflow-hidden">
-            {isCreateMode ? (
-              <CreateChatBoxContainer />
-            ) : (
-              <FileNavigationProvider
-                viewFileInChanges={handleViewFileInChanges}
-                diffPaths={diffPaths}
-              >
-                <LogNavigationProvider
-                  viewProcessInPanel={handleViewProcessInPanel}
-                  viewToolContentInPanel={handleViewToolContentInPanel}
-                >
-                  <WorkspacesMainContainer
-                    selectedWorkspace={selectedWorkspace ?? null}
-                    selectedSession={selectedSession}
-                    sessions={sessions}
-                    onSelectSession={selectSession}
-                    isLoading={isLoading}
-                    isNewSessionMode={isNewSessionMode}
-                    onStartNewSession={startNewSession}
-                    onViewCode={handleToggleChangesMode}
-                    diffStats={diffStats}
-                  />
-                </LogNavigationProvider>
-              </FileNavigationProvider>
-            )}
-          </div>
-        </Allotment.Pane>
-
-        <Allotment.Pane
-          minSize={300}
-          preferredSize={changesPanelWidth}
-          visible={isChangesMode || isLogsMode || isPreviewMode}
-        >
-          <div className="h-full overflow-hidden">
-            {isChangesMode && (
-              <ChangesPanelContainer
-                diffs={realDiffs}
-                selectedFilePath={selectedFilePath}
-                onFileInViewChange={setFileInView}
-                projectId={selectedWorkspaceTask?.project_id}
-                attemptId={selectedWorkspace?.id}
-              />
-            )}
-            {isLogsMode && (
-              <LogsContentContainer
-                content={logsPanelContent}
-                searchQuery={logSearchQuery}
-                currentMatchIndex={logCurrentMatchIdx}
-                onMatchIndicesChange={setLogMatchIndices}
-              />
-            )}
-            {isPreviewMode && (
-              <PreviewBrowserContainer attemptId={selectedWorkspace?.id} />
-            )}
-          </div>
-        </Allotment.Pane>
-
-        <Allotment.Pane
-          minSize={300}
-          preferredSize={gitPanelWidth}
-          maxSize={600}
-          visible={isGitPanelVisible}
-        >
-          <div className="h-full overflow-hidden">
-            {renderRightPanelContent()}
-          </div>
-        </Allotment.Pane>
-      </Allotment>
+          <WorkspacesMainContainer
+            selectedWorkspace={selectedWorkspace ?? null}
+            selectedSession={selectedSession}
+            sessions={sessions}
+            onSelectSession={selectSession}
+            isLoading={isLoading}
+            isNewSessionMode={isNewSessionMode}
+            onStartNewSession={startNewSession}
+            onViewCode={handleToggleChangesMode}
+            diffStats={diffStats}
+          />
+        </LogNavigationProvider>
+      </FileNavigationProvider>
     );
 
-    if (isCreateMode) {
-      return (
-        <CreateModeProvider
-          initialProjectId={lastWorkspaceTask?.project_id}
-          initialRepos={lastWorkspaceRepos}
-        >
-          <ReviewProvider attemptId={selectedWorkspace?.id}>
-            {allotmentContent}
-          </ReviewProvider>
-        </CreateModeProvider>
-      );
-    }
+    // Right main panel content (Changes/Logs/Preview)
+    const rightMainPanelContent = (
+      <>
+        {isChangesMode && (
+          <ChangesPanelContainer
+            diffs={realDiffs}
+            selectedFilePath={selectedFilePath}
+            onFileInViewChange={setFileInView}
+            projectId={selectedWorkspaceTask?.project_id}
+            attemptId={selectedWorkspace?.id}
+          />
+        )}
+        {isLogsMode && (
+          <LogsContentContainer
+            content={logsPanelContent}
+            searchQuery={logSearchQuery}
+            currentMatchIndex={logCurrentMatchIdx}
+            onMatchIndicesChange={setLogMatchIndices}
+          />
+        )}
+        {isPreviewMode && (
+          <PreviewBrowserContainer attemptId={selectedWorkspace?.id} />
+        )}
+      </>
+    );
 
-    return (
+    // Inner layout with main, changes/logs, git panel
+    const innerLayout = (
+      <div className="flex h-full">
+        {/* Resizable area for main + right panels */}
+        <Group
+          orientation="horizontal"
+          className="flex-1 min-w-0 h-full"
+          defaultLayout={defaultLayout()}
+          onLayoutChange={onLayoutChange}
+        >
+          {/* Main panel (chat area) */}
+          {isMainPanelVisible && (
+            <Panel
+              id="left-main"
+              minSize={20}
+              className="min-w-0 h-full overflow-hidden"
+            >
+              {mainPanelContent}
+            </Panel>
+          )}
+
+          {/* Resize handle between main and right panels */}
+          {isMainPanelVisible && isRightMainPanelVisible && (
+            <Separator
+              id="main-separator"
+              className="w-1 bg-transparent hover:bg-brand/50 transition-colors cursor-col-resize"
+            />
+          )}
+
+          {/* Right main panel (Changes/Logs/Preview) */}
+          {isRightMainPanelVisible && (
+            <Panel
+              id="right-main"
+              minSize={20}
+              className="min-w-0 h-full overflow-hidden"
+            >
+              {rightMainPanelContent}
+            </Panel>
+          )}
+        </Group>
+
+        {/* Git panel (right sidebar) - fixed width, not resizable */}
+        {isGitPanelVisible && (
+          <div className="w-[300px] shrink-0 h-full overflow-hidden">
+            {renderRightPanelContent()}
+          </div>
+        )}
+      </div>
+    );
+
+    // Wrap inner layout with providers
+    const wrappedInnerContent = isCreateMode ? (
+      <CreateModeProvider
+        initialProjectId={lastWorkspaceTask?.project_id}
+        initialRepos={lastWorkspaceRepos}
+      >
+        <ReviewProvider attemptId={selectedWorkspace?.id}>
+          {innerLayout}
+        </ReviewProvider>
+      </CreateModeProvider>
+    ) : (
       <ExecutionProcessesProvider
         key={`${selectedWorkspace?.id}-${selectedSessionId}`}
         attemptId={selectedWorkspace?.id}
         sessionId={selectedSessionId}
       >
         <ReviewProvider attemptId={selectedWorkspace?.id}>
-          {allotmentContent}
+          {innerLayout}
         </ReviewProvider>
       </ExecutionProcessesProvider>
+    );
+
+    return (
+      <div className="flex flex-1 min-h-0">
+        {/* Sidebar - OUTSIDE providers, won't remount on workspace switch */}
+        {isSidebarVisible && (
+          <div className="w-[300px] shrink-0 h-full overflow-hidden">
+            {renderSidebar()}
+          </div>
+        )}
+
+        {/* Container for provider-wrapped inner content */}
+        <div className="flex-1 min-w-0 h-full">{wrappedInnerContent}</div>
+      </div>
     );
   };
 

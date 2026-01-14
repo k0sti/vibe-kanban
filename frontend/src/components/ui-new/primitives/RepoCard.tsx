@@ -11,6 +11,10 @@ import {
   CopyIcon,
   GitMergeIcon,
   CheckCircleIcon,
+  SpinnerGapIcon,
+  WarningCircleIcon,
+  DotsThreeIcon,
+  GearIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -24,7 +28,12 @@ import { CollapsibleSection } from './CollapsibleSection';
 import { SplitButton, type SplitButtonOption } from './SplitButton';
 import { useRepoAction, PERSIST_KEYS } from '@/stores/useUiPreferencesStore';
 
-export type RepoAction = 'pull-request' | 'merge' | 'change-target' | 'rebase';
+export type RepoAction =
+  | 'pull-request'
+  | 'merge'
+  | 'change-target'
+  | 'rebase'
+  | 'push';
 
 const repoActionOptions: SplitButtonOption<RepoAction>[] = [
   {
@@ -46,12 +55,18 @@ interface RepoCardProps {
   prNumber?: number;
   prUrl?: string;
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
+  showPushButton?: boolean;
+  isPushPending?: boolean;
+  isPushSuccess?: boolean;
+  isPushError?: boolean;
   branchDropdownContent?: React.ReactNode;
   onChangeTarget?: () => void;
   onRebase?: () => void;
   onActionsClick?: (action: RepoAction) => void;
+  onPushClick?: () => void;
   onOpenInEditor?: () => void;
   onCopyPath?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export function RepoCard({
@@ -65,12 +80,18 @@ export function RepoCard({
   prNumber,
   prUrl,
   prStatus,
+  showPushButton = false,
+  isPushPending = false,
+  isPushSuccess = false,
+  isPushError = false,
   branchDropdownContent,
   onChangeTarget,
   onRebase,
   onActionsClick,
+  onPushClick,
   onOpenInEditor,
   onCopyPath,
+  onOpenSettings,
 }: RepoCardProps) {
   const { t } = useTranslation('tasks');
   const { t: tCommon } = useTranslation('common');
@@ -125,7 +146,7 @@ export function RepoCard({
                 className="flex items-center justify-center p-1.5 rounded hover:bg-tertiary text-low hover:text-base transition-colors"
                 title="Repo actions"
               >
-                <ArrowSquareOutIcon className="size-icon-base" weight="bold" />
+                <DotsThreeIcon className="size-icon-base" weight="bold" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
@@ -134,6 +155,9 @@ export function RepoCard({
               </DropdownMenuItem>
               <DropdownMenuItem icon={CodeIcon} onClick={onOpenInEditor}>
                 {tCommon('actions.openInIde')}
+              </DropdownMenuItem>
+              <DropdownMenuItem icon={GearIcon} onClick={onOpenSettings}>
+                {tCommon('actions.repoSettings')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -204,6 +228,40 @@ export function RepoCard({
               <GitPullRequestIcon className="size-icon-xs" weight="fill" />
               {t('git.pr.open', { number: prNumber })}
             </span>
+          )}
+          {/* Push button - shows loading/success/error state */}
+          {(showPushButton ||
+            isPushPending ||
+            isPushSuccess ||
+            isPushError) && (
+            <button
+              onClick={onPushClick}
+              disabled={isPushPending || isPushSuccess || isPushError}
+              className={`inline-flex items-center gap-half px-base py-half rounded-sm text-sm font-medium transition-colors disabled:cursor-not-allowed ${
+                isPushSuccess
+                  ? 'bg-success/20 text-success'
+                  : isPushError
+                    ? 'bg-error/20 text-error'
+                    : 'bg-panel text-normal hover:bg-tertiary disabled:opacity-50'
+              }`}
+            >
+              {isPushPending ? (
+                <SpinnerGapIcon className="size-icon-xs animate-spin" />
+              ) : isPushSuccess ? (
+                <CheckCircleIcon className="size-icon-xs" weight="fill" />
+              ) : isPushError ? (
+                <WarningCircleIcon className="size-icon-xs" weight="fill" />
+              ) : (
+                <ArrowUpIcon className="size-icon-xs" weight="bold" />
+              )}
+              {isPushPending
+                ? t('git.states.pushing')
+                : isPushSuccess
+                  ? t('git.states.pushed')
+                  : isPushError
+                    ? t('git.states.pushFailed')
+                    : t('git.states.push')}
+            </button>
           )}
         </div>
       )}
