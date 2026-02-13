@@ -1263,8 +1263,6 @@ impl ContainerService for LocalContainerService {
 
         // Notify execution started (webhook only, no sound)
         let metadata = WebhookMetadata::new()
-            .with_task(task.id, &task.title)
-            .with_project(project.id, &project.name)
             .with_workspace(workspace.id)
             .with_execution(execution_process.id);
         self.notification_service

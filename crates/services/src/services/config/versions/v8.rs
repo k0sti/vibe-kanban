@@ -131,7 +131,6 @@ impl Config {
             executor_profile: old_config.executor_profile,
             disclaimer_acknowledged: old_config.disclaimer_acknowledged,
             onboarding_acknowledged: old_config.onboarding_acknowledged,
-            notifications: NotificationConfig::from(old_config.notifications),
             remote_onboarding_acknowledged: false,
             notifications: NotificationConfig::from(old_config.notifications),
             editor: old_config.editor,
