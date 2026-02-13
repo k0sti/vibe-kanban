@@ -10,6 +10,7 @@ import {
   TrashIcon,
   WarningIcon,
   ArrowUpIcon,
+  ArrowsOutIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -93,6 +94,7 @@ interface StatsProps {
   linesRemoved?: number;
   hasConflicts?: boolean;
   conflictedFilesCount?: number;
+  onResolveConflicts?: () => void;
 }
 
 interface FeedbackModeProps {
@@ -150,6 +152,7 @@ interface SessionChatBoxProps {
   inProgressTodo?: TodoItem | null;
   localImages?: LocalImageMetadata[];
   onViewCode?: () => void;
+  onOpenWorkspace?: () => void;
   onScrollToPreviousMessage?: () => void;
   tokenUsageInfo?: TokenUsageInfo | null;
   dropzone?: DropzoneProps;
@@ -180,6 +183,7 @@ export function SessionChatBox({
   inProgressTodo,
   localImages,
   onViewCode,
+  onOpenWorkspace,
   onScrollToPreviousMessage,
   tokenUsageInfo,
   dropzone,
@@ -569,9 +573,11 @@ export function SessionChatBox({
               ) : (
                 <>
                   {stats?.hasConflicts && (
-                    <span
-                      className="flex items-center gap-1 text-warning text-sm min-w-0"
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-warning text-sm min-w-0 cursor-pointer hover:underline"
                       title={t('conversation.approval.conflictWarning')}
+                      onClick={stats.onResolveConflicts}
                     >
                       <WarningIcon className="size-icon-sm flex-shrink-0" />
                       <span className="truncate">
@@ -579,9 +585,17 @@ export function SessionChatBox({
                           count: stats.conflictedFilesCount,
                         })}
                       </span>
-                    </span>
+                    </button>
                   )}
-                  {onViewCode ? (
+                  {onOpenWorkspace ? (
+                    <PrimaryButton
+                      variant="secondary"
+                      onClick={onOpenWorkspace}
+                      value="Open Workspace"
+                      actionIcon={ArrowsOutIcon}
+                      className="min-w-0"
+                    />
+                  ) : onViewCode ? (
                     <PrimaryButton
                       variant="tertiary"
                       onClick={onViewCode}

@@ -15,6 +15,7 @@ import type { LogEntry } from '../containers/VirtualizedProcessLogs';
 import type { LayoutMode } from '@/stores/useUiPreferencesStore';
 import {
   CopyIcon,
+  XIcon,
   PushPinIcon,
   ArchiveIcon,
   TrashIcon,
@@ -62,6 +63,7 @@ import {
 } from '@/stores/useUiPreferencesStore';
 
 import { attemptsApi, tasksApi, repoApi } from '@/lib/api';
+import { bulkUpdateIssues } from '@/lib/remoteApi';
 import { attemptKeys } from '@/hooks/useAttempt';
 import { taskKeys } from '@/hooks/useTask';
 import { workspaceSummaryKeys } from '@/components/ui-new/hooks/useWorkspaces';
@@ -77,6 +79,7 @@ import { EditorSelectionDialog } from '@/components/dialogs/tasks/EditorSelectio
 import { StartReviewDialog } from '@/components/dialogs/tasks/StartReviewDialog';
 import posthog from 'posthog-js';
 import { WorkspacesGuideDialog } from '@/components/ui-new/dialogs/WorkspacesGuideDialog';
+import { ProjectsGuideDialog } from '@/components/ui-new/dialogs/ProjectsGuideDialog';
 import { SettingsDialog } from '@/components/ui-new/dialogs/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/components/dialogs/CreateWorkspaceFromPrDialog';
 
@@ -98,6 +101,7 @@ export type ActionIcon = Icon | SpecialIconType;
 // Workspace type for sidebar (minimal subset needed for workspace selection)
 interface SidebarWorkspace {
   id: string;
+  isRunning?: boolean;
 }
 
 // Dev server state type for visibility context
@@ -199,6 +203,7 @@ export interface ActionVisibilityContext {
 
   // Kanban state
   hasSelectedKanbanIssue: boolean;
+  hasSelectedKanbanIssueParent: boolean;
   isCreatingIssue: boolean;
 
   // Auth state
@@ -562,7 +567,7 @@ export const Actions = {
       const { OAuthDialog } = await import(
         '@/components/dialogs/global/OAuthDialog'
       );
-      await OAuthDialog.show();
+      await OAuthDialog.show({});
     },
   } satisfies GlobalActionDefinition,
 
@@ -603,10 +608,22 @@ export const Actions = {
     label: 'Workspaces Guide',
     icon: QuestionIcon,
     requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     execute: async () => {
       await WorkspacesGuideDialog.show();
     },
   },
+
+  ProjectsGuide: {
+    id: 'projects-guide',
+    label: 'Projects Guide',
+    icon: QuestionIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'kanban',
+    execute: async () => {
+      await ProjectsGuideDialog.show();
+    },
+  } satisfies GlobalActionDefinition,
 
   OpenCommandBar: {
     id: 'open-command-bar',
@@ -1003,6 +1020,13 @@ export const Actions = {
         (repoStatus?.conflicted_files?.length ?? 0) > 0;
 
       if (hasConflicts && repoStatus) {
+        // Skip showing the dialog if a process is already running
+        // (e.g. an AI session is already resolving these conflicts)
+        const isRunning = ctx.activeWorkspaces.find(
+          (w) => w.id === workspaceId
+        )?.isRunning;
+        if (isRunning) return;
+
         // Show resolve conflicts dialog
         const workspace = await getWorkspace(ctx.queryClient, workspaceId);
         const result = await ResolveConflictsDialog.show({
@@ -1366,6 +1390,29 @@ export const Actions = {
     },
   } satisfies IssueActionDefinition,
 
+  RemoveParentIssue: {
+    id: 'remove-parent-issue',
+    label: 'Remove Parent',
+    icon: XIcon,
+    shortcut: 'I U',
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' &&
+      ctx.hasSelectedKanbanIssue &&
+      ctx.hasSelectedKanbanIssueParent,
+    execute: async (_ctx, _projectId, issueIds) => {
+      await bulkUpdateIssues(
+        issueIds.map((issueId) => ({
+          id: issueId,
+          changes: {
+            parent_issue_id: null,
+            parent_issue_sort_order: null,
+          },
+        }))
+      );
+    },
+  } satisfies IssueActionDefinition,
+
   LinkWorkspace: {
     id: 'link-workspace',
     label: 'Link Workspace',
@@ -1534,6 +1581,7 @@ export const NavbarActionGroups = {
     Actions.OpenCommandBar,
     Actions.Feedback,
     Actions.WorkspacesGuide,
+    Actions.ProjectsGuide,
     Actions.Settings,
   ] as NavbarItem[],
 };
